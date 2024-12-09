@@ -1,0 +1,26 @@
+---
+- name: Cleanup cassandra
+  hosts: cassandra_nodes
+  become: true
+  vars:
+    version: "apache-cassandra-5.0.2"
+    cassandra_user: cassandra
+    cassandra_group: cassandra
+    cluster_name: 'LAB'
+  tasks:
+    - name: Stop cassandra
+      ansible.builtin.systemd:
+        name: cassandra
+        state: stopped
+        enabled: false
+    - name: Delete simlink
+      ansible.builtin.file:
+        path: "/var/lib/{{ version }}"
+        state: absent
+    - name: Delete directory
+      ansible.builtin.file:
+        path: "/var/lib/{{ version }}"
+        state: absent
+    - name: Reboot server
+      ansible.builtin.reboot:
+        msg: "Server will be rebooted for cleanup."
