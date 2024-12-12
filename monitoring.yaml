@@ -1,0 +1,39 @@
+# TODO: check if port 8080 is open
+---
+- name: Deploy cassandra
+  hosts: cassandra_nodes
+  become: true
+  vars:
+    cassandra_home: "/var/lib/cassandra"
+    alloy_log_level: "warn"
+    loki_url: "http://192.168.70.1:3100"
+    mimir_url: "http://192.168.70.1:9009"
+    cassandra_prometheus_port: 8080
+  tasks:
+    - name: Add repository
+      ansible.builtin.yum_repository:
+        name: grafana
+        description: "Grafana repository"
+        baseurl: https://rpm.grafana.com
+        gpgcheck: true
+        enabled: true
+        gpgkey: https://rpm.grafana.com/gpg.key
+    - name: Ensure alloy is installed
+      ansible.builtin.dnf:
+        name: alloy
+        state: present
+    - name: Copy template configuration
+      ansible.builtin.template:
+        src: alloy.config.j2
+        dest: "/etc/alloy/config.alloy"
+        mode: 0644
+    - name: Reload services
+      ansible.builtin.systemd:
+        name: "alloy.service"
+        enabled: true
+        no_block: true
+        state: "restarted"
+        daemon_reload: true
+      delegate_to: "{{ item }}"
+      with_items: "{{ groups['cassandra_nodes'] }}"
+      run_once: true

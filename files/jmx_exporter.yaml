@@ -1,0 +1,9 @@
+#openTelemetry:
+#  #endpoint: http://192.168.70.1:8080/otlp
+#  endpoint: http://192.168.70.1:9009/otlp
+#  protocol: http/protobuf
+#  interval: 60
+
+excludeObjectNames: ["org.apache.cassandra.metrics:type=ColumnFamily,*"]
+rules:
+- pattern: ".*"

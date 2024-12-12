@@ -4,12 +4,14 @@
   become: true
   vars:
     version: "apache-cassandra-5.0.2"
-    # version: "apache-cassandra-5.0.2-bin.tar"
+    unarchive_dest: "/var/lib"
     cassandra_user: cassandra
     cassandra_group: cassandra
     cluster_name: LAB
-    python: python3.11
-    num_tokens: 8
+    python: "python3.11"
+    cassandra_home: "{{ unarchive_dest }}/cassandra"
+    cassandra_prometheus_port: "8080"
+    num_tokens: "8"
   tasks:
     - name: Create cassandra group
       ansible.builtin.group:
@@ -28,13 +30,18 @@
         mode: "0664"
         owner: "{{ cassandra_user }}"
         group: "{{ cassandra_group }}"
+    - name: Check if version already exists on server
+      ansible.builtin.stat:
+        path: "/var/lib/{{ version }}"
+      register: cassandra_check
     - name: Untar archive
       ansible.builtin.unarchive:
         src: "/tmp/{{ version }}-bin.tar"
-        dest: /var/lib/
+        dest: "{{ unarchive_dest }}"
         remote_src: true
         owner: "{{ cassandra_user }}"
         group: "{{ cassandra_group }}"
+      when: cassandra_check.stat.exists == false
     - name: Install openjdk
       ansible.builtin.dnf:
         name: "{{ item }}"
@@ -46,25 +53,45 @@
         - uv
         - python-devel
         - gcc
-      # notify: Restart cassandra
+      notify: Restart cassandra
     - name: Create simlink
       ansible.builtin.file:
         src: "{{ item }}"
-        dest: /var/lib/cassandra
+        dest: "{{ cassandra_home }}"
         state: link
         owner: "root"
         group: "root"
       loop:
         - "/var/lib/{{ version }}"
-        #- "/root/cassandra" 
-    - name: Run various commands
-      ansible.builtin.command: "{{ item }}"
-      loop:
+        # - "/root/cassandra" 
+    - name: Check if cassandra-driver is present
+      ansible.builtin.command: "uv pip list"
+      changed_when: pip_check.stdout.find('cassandra-driver') == -1
+      register: pip_check
+    - name: Install cassandra-driver
+      ansible.builtin.command: "uv pip install cassandra-driver --system"
+      when: pip_check.stdout.find('cassandra-driver') == -1
+    - name: Check EXEC permissions on cassandra file
+      ansible.builtin.command: "ls -Z {{ cassandra_home }}/bin/cassandra"
+      register: cassandra_exec_check
+      changed_when: cassandra_exec_check.stdout.find('bin_t') == -1
+    - name: Debug
+      ansible.builtin.debug:
+        msg: "{{ cassandra_exec_check }}"
+    - name: Change permissions
+      ansible.builtin.command: "chcon -R -t bin_t {{ cassandra_home }}/bin/cassandra"
+      when: cassandra_exec_check.stdout.find('bin_t') == -1
+    #- name: Restore confinement
+      #  ansible.builtin.command: "restorecon -R -v {{ cassandra_home }}/bin/cassandra"
+      #when: cassandra_exec_check.stdout.find('bin_t') == -1
+    # - name: Run various commands
+      # ansible.builtin.command: "{{ item }}"
+      # loop:
         # - "alternatives --install /usr/bin/python python /usr/bin/{{ python }} 2"
         # - "alternatives --install /usr/bin/python3 python3 /usr/bin/{{ python }} 2"
-        - "uv pip install cassandra-driver --system"
-        - "restorecon -R -v /var/lib/cassandra/bin/cassandra"
-        - "chcon -R -t bin_t /var/lib/cassandra/bin/cassandra"
+        # - "uv pip install cassandra-driver --system"
+        # - "restorecon -R -v {{ cassandra_home }}/bin/cassandra"
+        # - "chcon -R -t bin_t {{ cassandra_home }}/bin/cassandra"
     - name: Create data directory
       ansible.builtin.file:
         path: "{{ item }}"
@@ -72,11 +99,11 @@
         owner: "{{ cassandra_user }}"
         group: "{{ cassandra_group }}"
       loop:
-        - "/var/lib/cassandra/logs"
-        - "/var/lib/cassandra/data"
+        - "{{ cassandra_home }}/logs"
+        - "{{ cassandra_home }}/data"
     - name: Change configuration, change value
       ansible.builtin.lineinfile:
-        path: /var/lib/cassandra/conf/cassandra.yaml
+        path: "{{ cassandra_home }}/conf/cassandra.yaml"
         regexp: "{{ item.regex }}"
         line: "{{ item.value }}"
         backrefs: true
@@ -102,7 +129,7 @@
       notify: Restart cassandra
     - name: Change snitch configuration
       ansible.builtin.lineinfile:
-        path: /var/lib/cassandra/conf/cassandra-rackdc.properties
+        path: "{{ cassandra_home }}/conf/cassandra-rackdc.properties"
         regexp: "{{ item.regex }}"
         line: "{{ item.value }}"
         backrefs: true
@@ -111,9 +138,20 @@
           value: 'dc=pl'
         - regex: 'rack=.*'
           value: 'rack=marsa'
+    - name: Copy jmx_exporter configuration
+      ansible.builtin.copy:
+        src: jmx_exporter.yaml
+        dest: "{{ cassandra_home }}/conf/jmx_exporter.yaml"
+        mode: "0644"
+        owner: "{{ cassandra_user }}"
+    - name: Download file with check (sha256)
+      ansible.builtin.get_url:
+        url: https://github.com/prometheus/jmx_exporter/releases/download/1.1.0/jmx_prometheus_javaagent-1.1.0.jar
+        dest: "{{ cassandra_home }}/lib/jmx_prometheus_javaagent.jar"
+        checksum: sha256:2d158db7a4cd2999f40ca30a2532bc8456ca3ecf37498cbe60a02a588bf3c9f1
     - name: Append to configuration
       ansible.builtin.lineinfile:
-        path: /var/lib/cassandra/conf/cassandra-env.sh
+        path: "{{ cassandra_home }}/conf/cassandra-env.sh"
         line: "{{ item }}"
         state: "present"
         create: true
@@ -121,6 +159,8 @@
         group: "{{ cassandra_group }}"
       loop:
         - JVM_OPTS="$JVM_OPTS --add-exports jdk.jconsole/sun.tools.jconsole=ALL-UNNAMED -Djava.security.manager=allow"
+        - JVM_OPTS="$JVM_OPTS -javaagent:{{ cassandra_home }}/lib/jmx_prometheus_javaagent.jar={{ cassandra_prometheus_port }}:{{ cassandra_home }}/conf/jmx_exporter.yaml"
+      notify: Restart cassandra
 
 #JVM_OPTS="$JVM_OPTS --add-opens=java.management/com.sun.jmx.mbeanserver=ALL-UNNAMED"
 #JVM_OPTS="$JVM_OPTS --add-exports=java.management/com.sun.jmx.interceptor=ALL-UNNAMED"
@@ -134,12 +174,13 @@
         mode: "0644"
         owner: root
         group: root
+    # TODO: startup with wait for running node 
     - name: Reload services
       ansible.builtin.systemd:
         name: "cassandra.service"
         enabled: true
         no_block: true
-        state: "started"
+        state: "restarted"
         daemon_reload: true
       delegate_to: "{{ item }}"
       with_items: "{{ groups['cassandra_nodes'] }}"

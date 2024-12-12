@@ -1,0 +1,15 @@
+[Unit]
+Description=Cassandra Cluster Node Daemon
+
+[Service]
+Type=forking
+User=cassandra
+ExecStartPre=/usr/bin/echo "Starting Cassandra Daemon"
+ExecStart=/var/lib/cassandra/bin/cassandra
+ExecStartPost=/usr/bin/echo "Cassandra Daemon Running"
+
+#ExecStopPost=/usr/bin/rm -rf /data/cassandra/saved_caches;/usr/bin/echo "Cassandra Daemon Stopped"
+
+[Install]
+WantedBy=default.target
+
