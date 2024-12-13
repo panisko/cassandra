@@ -1,0 +1,109 @@
+logging {
+  // level = "info"
+  level = "{{ alloy_log_level }}"
+}
+
+local.file_match "local_files" {
+    path_targets = [{"__path__" = "/var/log/*.log"},{"__path__" = "/var/log/messages"}]
+    sync_period = "5s"
+}
+
+local.file_match "cassandra" {
+    path_targets = [{"__path__" = "{{ cassandra_home }}/logs/debug.log"}, {"__path__" = "{{ cassandra_home }}/logs/system.log"}]
+    sync_period = "5s"
+}
+
+loki.source.file "log_scrape" {
+    targets = local.file_match.local_files.targets
+    forward_to = [loki.write.local.receiver]
+    tail_from_end = true
+}
+
+loki.source.file "cassandra" {
+    forward_to = [loki.process.cassandra.receiver]
+    targets = local.file_match.cassandra.targets
+    tail_from_end = true
+}
+
+loki.process "cassandra" {
+    forward_to = [loki.write.local.receiver]
+
+    stage.regex {
+        expression = "(?P<level>\\w+)\\s+\\[(?P<source>.*?)\\]\\s+(?P<timestamp>[\\d-]+\\s[\\d:,]+)\\s+(?P<logger>[\\w.]+):(?P<line>\\d+)\\s+-\\s+(?P<message>.*)" }
+
+    stage.labels {
+        values = {
+                level = "level",
+                source = "source",
+                timestamp = "timestamp",
+                logger = "logger",
+                message = "message",
+        }
+
+    }
+    // Drop to long lines
+    stage.drop {
+       source = "message"
+       expression = "^(Node\\ configuration|Classpath|JVM\\ Arguments).*"
+    }
+
+    stage.output {
+        source = "log"
+    }
+
+}
+
+prometheus.exporter.unix "default" {
+    include_exporter_metrics = true
+    disable_collectors       = ["mdadm"]
+}
+
+prometheus.scrape "default" {
+    targets = array.concat(
+        prometheus.exporter.unix.default.targets,
+        [ { job = "alloy", __address__ = "127.0.0.1:12345"} ],
+    )
+    forward_to = [prometheus.remote_write.metrics.receiver]
+}
+
+prometheus.scrape "cassandra" {
+  targets = [ {job = "cassandra", __address__ = "127.0.0.1:{{ cassandra_prometheus_port }}" } ]
+
+  forward_to = [prometheus.relabel.cassandra.receiver]
+}
+
+prometheus.relabel "cassandra" {
+    forward_to = [prometheus.remote_write.metrics.receiver]
+
+    rule {
+        action = "drop"
+        source_labels = ["__name__"]
+        regex  = "org_apache_cassandra_metrics_(.+)_(StdDev|OneMinuteRate|MeanRate|Mean|FifteenMinuteRate|FiveMinuteRate|75thPercentile|98thPercentile|50thPercentile|95thPercentile|99thPercentile)"
+    }
+    rule {
+        action = "drop"
+        source_labels = ["__name__"]
+        regex  = "org_apache_cassandra_db_ColumnFamilies_(.+)|org_apache_cassandra_metrics_ColumnFamily_(.+)|org_apache_cassandra_net_FailureDetector_PhiValuesWithPort_PHI|org_apache_cassandra_db_Tables_AutoCompactionDisabled"
+    }
+
+    rule {
+        action = "labeldrop"
+        regex = "instance"
+    }
+}
+
+prometheus.remote_write "metrics" {
+    endpoint {
+        url = "{{ mimir_url }}/api/v1/push"
+        headers = { "X-Scope-OrgID" = "{{ inventory_hostname }}", }
+    }
+    external_labels = { hostname = "{{ inventory_hostname }}", }
+}
+
+loki.write "local" {
+    endpoint {
+        url = "{{ loki_url }}/loki/api/v1/push"
+        headers = { "X-Scope-OrgID" = "{{ inventory_hostname }}", }
+    }
+    external_labels = { hostname = "{{ inventory_hostname }}" }
+}

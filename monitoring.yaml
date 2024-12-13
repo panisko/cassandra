@@ -22,18 +22,16 @@
       ansible.builtin.dnf:
         name: alloy
         state: present
+    - name: Grant alloy user access to logs
+      ansible.builtin.command: "setfacl -R -m u:alloy:rX /var/log"
     - name: Copy template configuration
       ansible.builtin.template:
-        src: alloy.config.j2
+        src: config.alloy.j2
         dest: "/etc/alloy/config.alloy"
         mode: 0644
     - name: Reload services
       ansible.builtin.systemd:
         name: "alloy.service"
         enabled: true
-        no_block: true
         state: "restarted"
         daemon_reload: true
-      delegate_to: "{{ item }}"
-      with_items: "{{ groups['cassandra_nodes'] }}"
-      run_once: true
