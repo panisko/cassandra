@@ -4,6 +4,6 @@
 #  protocol: http/protobuf
 #  interval: 60
 
-excludeObjectNames: ["org.apache.cassandra.metrics:type=ColumnFamily,*"]
+#excludeObjectNames: ["org.apache.cassandra.metrics:type=ColumnFamily,*"]
 rules:
 - pattern: ".*"
